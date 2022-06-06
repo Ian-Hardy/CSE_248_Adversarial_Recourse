@@ -1,8 +1,10 @@
 from typing import Union
 
 import pandas as pd
+import numpy as np
 import torch
 import xgboost
+import torchattacks
 from sklearn.ensemble import RandomForestClassifier
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
@@ -13,6 +15,7 @@ from carla.models.catalog.ANN_TORCH import AnnModel as ann_torch
 from carla.models.catalog.Linear_TF import LinearModel
 from carla.models.catalog.Linear_TF import LinearModel as linear_tf
 from carla.models.catalog.Linear_TORCH import LinearModel as linear_torch
+
 
 
 def train_model(
@@ -27,6 +30,8 @@ def train_model(
     hidden_size: list,
     n_estimators: int,
     max_depth: int,
+    adv = False, 
+    radius = None
 ) -> Union[LinearModel, AnnModel, RandomForestClassifier, xgboost.XGBClassifier]:
     """
 
@@ -107,6 +112,16 @@ def train_model(
             raise ValueError(
                 f"model type not recognized for backend {catalog_model.backend}"
             )
+        if adv:
+            _adv_training_torch(
+            model,
+            train_loader,
+            test_loader,
+            learning_rate,
+            epochs,
+            radius
+            )
+            return model
         _training_torch(
             model,
             train_loader,
@@ -214,6 +229,85 @@ def _training_torch(
                 optimizer.zero_grad()
 
                 with torch.set_grad_enabled(phase == "train"):
+                    outputs = model(inputs.float())
+                    loss = criterion(outputs, labels.float())
+
+                    # backward + optimize only if in training phase
+                    if phase == "train":
+                        loss.backward()
+                        optimizer.step()
+
+                # statistics
+                running_loss += loss.item() * inputs.size(0)
+                running_corrects += torch.sum(
+                    torch.argmax(outputs, axis=1)
+                    == torch.argmax(labels, axis=1).float()
+                )
+
+            epoch_loss = running_loss / len(loaders[phase].dataset)
+            epoch_acc = running_corrects.double() / len(loaders[phase].dataset)
+
+            print("{} Loss: {:.4f} Acc: {:.4f}".format(phase, epoch_loss, epoch_acc))
+            print()
+
+def _adv_training_torch(
+    model,
+    train_loader,
+    test_loader,
+    learning_rate,
+    epochs,
+    radius
+):
+    loaders = {"train": train_loader, "test": test_loader}
+
+    # Use GPU is available
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = model.to(device)
+
+    # define the loss
+    criterion = nn.BCELoss()
+
+    # declaring optimizer
+    optimizer = torch.optim.RMSprop(model.parameters(), lr=learning_rate)
+
+    attacker = torchattacks.PGD(model, eps=radius, alpha=2/255, steps=30, random_start=True)
+
+    # training
+    for e in range(epochs):
+        print("Epoch {}/{}".format(e, epochs - 1))
+        print("-" * 10)
+
+        # Each epoch has a training and validation phase
+        for phase in ["train", "test"]:
+
+            running_loss = 0.0
+            running_corrects = 0.0
+
+            if phase == "train":
+                model.train()  # Set model to training mode
+            else:
+                model.eval()  # Set model to evaluation mode
+
+            for i, (inputs, labels) in enumerate(loaders[phase]):
+                if phase == "train":
+                    atk_inds = np.random.choice(range(inputs.shape[0]), size=inputs.shape[0]//2, replace=False)
+                    orig_inds = [ind for ind in range(inputs.shape[0]) if ind not in atk_inds]
+                    adv_samples = attacker(inputs[atk_inds].float(), labels[atk_inds])
+                    orig_samples = inputs[orig_inds]
+                    mixed_set = torch.cat((adv_samples, orig_samples))
+                    mixed_labels = torch.cat((labels[atk_inds], labels[orig_inds]))
+
+                    inputs = mixed_set.to(device)
+                    labels = mixed_labels.to(device).type(torch.int64)
+                else:
+                    inputs = inputs.to(device)
+                    labels = labels.to(device).type(torch.int64)
+                labels = torch.nn.functional.one_hot(labels, num_classes=2)
+
+                optimizer.zero_grad()
+
+                with torch.set_grad_enabled(phase == "train"):
+
                     outputs = model(inputs.float())
                     loss = criterion(outputs, labels.float())
 

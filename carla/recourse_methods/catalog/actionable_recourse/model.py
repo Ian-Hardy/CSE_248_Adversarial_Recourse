@@ -71,6 +71,7 @@ class ActionableRecourse(RecourseMethod):
         hyperparams: Dict,
         coeffs: Optional[np.ndarray] = None,
         intercepts: Optional[np.ndarray] = None,
+        custom_bounds = None
     ) -> None:
         super().__init__(mlmodel)
         self._data = mlmodel.data
@@ -85,7 +86,7 @@ class ActionableRecourse(RecourseMethod):
 
         # Build ActionSet
         self.action_set = rs.ActionSet(
-            X=self._data.df[self._mlmodel.feature_input_order]
+            X=self._data.df[self._mlmodel.feature_input_order], custom_bounds = custom_bounds
         )
 
         # transform immutable feature names into encoded feature names of self._data.encoded_normalized

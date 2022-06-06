@@ -312,6 +312,8 @@ class MLModelCatalog(MLModel):
         hidden_size=[18, 9, 3],
         n_estimators=5,
         max_depth=5,
+        adv=False, 
+        radius=None
     ):
         """
 
@@ -387,6 +389,8 @@ class MLModelCatalog(MLModel):
                 hidden_size,
                 n_estimators,
                 max_depth,
+                adv, 
+                radius
             )
 
             save_model(
